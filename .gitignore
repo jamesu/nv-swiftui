@@ -3,6 +3,7 @@ build/*
 *.pbxuser
 *.mode1v3
 *.mode1
+.build/*
 
 # Mac OS X specific
 .DS_Store
