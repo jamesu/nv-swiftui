@@ -46,6 +46,9 @@ struct AppKitControlField: NSViewRepresentable {
     let placeholder: String
     let selectAllOnBeginEditing: Bool
     let isEditingTitle: Bool
+    let focusRequestID: Int
+    let focusSelectAll: Bool
+    let focusCursorAtEnd: Bool
     let autoComplete: (String) -> String?
     let onChange: (String) -> Void
     let onSubmit: () -> Void
@@ -53,6 +56,7 @@ struct AppKitControlField: NSViewRepresentable {
     let onMoveForward: () -> Void
     let onMoveBackward: () -> Void
     let onMoveToEditor: () -> Void
+    let onFocus: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -64,7 +68,8 @@ struct AppKitControlField: NSViewRepresentable {
             onCancel: onCancel,
             onMoveForward: onMoveForward,
             onMoveBackward: onMoveBackward,
-            onMoveToEditor: onMoveToEditor
+            onMoveToEditor: onMoveToEditor,
+            onFocus: onFocus
         )
     }
 
@@ -83,6 +88,9 @@ struct AppKitControlField: NSViewRepresentable {
     func updateNSView(_ field: NSSearchField, context: Context) {
         context.coordinator.selectAllOnBeginEditing = selectAllOnBeginEditing
         context.coordinator.isEditingTitle = isEditingTitle
+        context.coordinator.focusRequestID = focusRequestID
+        context.coordinator.focusSelectAll = focusSelectAll
+        context.coordinator.focusCursorAtEnd = focusCursorAtEnd
         let isEditing = field.window?.firstResponder is NSTextView
         if isEditing,
            let prefix = context.coordinator.autocompletedPrefix,
@@ -95,6 +103,13 @@ struct AppKitControlField: NSViewRepresentable {
             context.coordinator.autocompletedPrefix = nil
             field.stringValue = text
             context.coordinator.isProgrammaticUpdate = false
+        }
+
+        if context.coordinator.lastHandledFocusRequestID != focusRequestID {
+            context.coordinator.lastHandledFocusRequestID = focusRequestID
+            DispatchQueue.main.async {
+                NVSearchField.focusActiveField(selectAll: focusSelectAll, cursorAtEnd: focusCursorAtEnd)
+            }
         }
     }
 
@@ -109,8 +124,13 @@ struct AppKitControlField: NSViewRepresentable {
         let onMoveForward: () -> Void
         let onMoveBackward: () -> Void
         let onMoveToEditor: () -> Void
+        let onFocus: () -> Void
         var isProgrammaticUpdate = false
         var autocompletedPrefix: String?
+        var focusRequestID = 0
+        var focusSelectAll = true
+        var focusCursorAtEnd = false
+        var lastHandledFocusRequestID = 0
         private var lastUserTypedValue = ""
 
         init(
@@ -122,7 +142,8 @@ struct AppKitControlField: NSViewRepresentable {
             onCancel: @escaping () -> Void,
             onMoveForward: @escaping () -> Void,
             onMoveBackward: @escaping () -> Void,
-            onMoveToEditor: @escaping () -> Void
+            onMoveToEditor: @escaping () -> Void,
+            onFocus: @escaping () -> Void
         ) {
             self.selectAllOnBeginEditing = selectAllOnBeginEditing
             self.isEditingTitle = isEditingTitle
@@ -133,12 +154,14 @@ struct AppKitControlField: NSViewRepresentable {
             self.onMoveForward = onMoveForward
             self.onMoveBackward = onMoveBackward
             self.onMoveToEditor = onMoveToEditor
+            self.onFocus = onFocus
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
             if let field {
                 lastUserTypedValue = field.stringValue
             }
+            onFocus()
             guard selectAllOnBeginEditing,
                   let editor = obj.userInfo?["NSFieldEditor"] as? NSTextView else {
                 return
@@ -187,6 +210,27 @@ struct AppKitControlField: NSViewRepresentable {
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            let eventModifiers = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+
+            if commandSelector == #selector(NSResponder.insertTab(_:)) ||
+                commandSelector == #selector(NSResponder.insertTabIgnoringFieldEditor(_:)) {
+                if eventModifiers.contains(.shift) {
+                    onMoveBackward()
+                } else {
+                    onMoveForward()
+                }
+                return true
+            }
+
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                if eventModifiers.contains(.control) {
+                    onMoveForward()
+                } else {
+                    onMoveBackward()
+                }
+                return true
+            }
+
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
                 autocompletedPrefix = nil
                 lastUserTypedValue = ""
@@ -200,15 +244,6 @@ struct AppKitControlField: NSViewRepresentable {
                     lastUserTypedValue = field.stringValue
                 }
                 onSubmit()
-                return true
-            }
-            if commandSelector == #selector(NSResponder.insertTab(_:)) ||
-                commandSelector == #selector(NSResponder.insertTabIgnoringFieldEditor(_:)) {
-                onMoveForward()
-                return true
-            }
-            if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
-                onMoveBackward()
                 return true
             }
             if isEditingTitle &&

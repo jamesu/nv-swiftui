@@ -14,6 +14,10 @@ final class NVEditorTextView: NSTextView {
     var onRedoCommand: (() -> Void)?
     var onMoveToTitleEditing: (() -> Void)?
     var onMoveToTagEditing: (() -> Void)?
+    var onMoveFocusForward: (() -> Void)?
+    var onMoveFocusBackward: (() -> Void)?
+    var usesSoftTabs = true
+    var tabWidth = 4
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
@@ -184,6 +188,12 @@ final class NVEditorTextView: NSTextView {
 
     override func insertBacktab(_ sender: Any?) {
         onMoveToTagEditing?()
+    }
+
+    override func insertTab(_ sender: Any?) {
+        guard isEditable else { return }
+        let insertion = usesSoftTabs ? String(repeating: " ", count: max(1, tabWidth)) : "\t"
+        insertText(insertion, replacementRange: selectedRange())
     }
 
     private func applyFormatting(_ operation: (NVEditorTextView) -> Void) {
@@ -436,8 +446,11 @@ struct AppKitNoteTextView: NSViewRepresentable {
     let fontSize: CGFloat
     let foregroundColor: NSColor
     let backgroundColor: NSColor
+    let usesSoftTabs: Bool
+    let tabWidth: Int
     let isEditable: Bool
     let refreshGeneration: Int
+    let focusRequestID: Int
     let searchHighlightTerms: [String]
     let searchHighlightColor: NSColor
     let onBeginEditing: () -> Void
@@ -447,12 +460,16 @@ struct AppKitNoteTextView: NSViewRepresentable {
     let onRedoCommand: () -> Void
     let onMoveToTitleEditing: () -> Void
     let onMoveToTagEditing: () -> Void
+    let onMoveFocusForward: () -> Void
+    let onMoveFocusBackward: () -> Void
+    let onFocus: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onBeginEditing: onBeginEditing,
             onTextChange: onTextChange,
-            onSelectionChange: onSelectionChange
+            onSelectionChange: onSelectionChange,
+            onFocus: onFocus
         )
     }
 
@@ -484,11 +501,15 @@ struct AppKitNoteTextView: NSViewRepresentable {
         textView.backgroundColor = backgroundColor
         textView.insertionPointColor = foregroundColor
         textView.typingAttributes[.foregroundColor] = foregroundColor
+        textView.usesSoftTabs = usesSoftTabs
+        textView.tabWidth = tabWidth
         textView.noteID = noteID
         textView.onUndoCommand = onUndoCommand
         textView.onRedoCommand = onRedoCommand
         textView.onMoveToTitleEditing = onMoveToTitleEditing
         textView.onMoveToTagEditing = onMoveToTagEditing
+        textView.onMoveFocusForward = onMoveFocusForward
+        textView.onMoveFocusBackward = onMoveFocusBackward
         NVEditorTextView.setDefaultPlainTextAttributes([
             .font: textView.font as Any,
             .foregroundColor: foregroundColor
@@ -505,6 +526,7 @@ struct AppKitNoteTextView: NSViewRepresentable {
             terms: searchHighlightTerms,
             color: searchHighlightColor
         )
+        context.coordinator.lastHandledFocusRequestID = focusRequestID
         return scrollView
     }
 
@@ -522,6 +544,8 @@ struct AppKitNoteTextView: NSViewRepresentable {
             textView.insertionPointColor = foregroundColor
         }
         textView.typingAttributes[.foregroundColor] = foregroundColor
+        textView.usesSoftTabs = usesSoftTabs
+        textView.tabWidth = tabWidth
         if textView.isEditable != isEditable {
             textView.isEditable = isEditable
         }
@@ -533,6 +557,8 @@ struct AppKitNoteTextView: NSViewRepresentable {
         textView.onRedoCommand = onRedoCommand
         textView.onMoveToTitleEditing = onMoveToTitleEditing
         textView.onMoveToTagEditing = onMoveToTagEditing
+        textView.onMoveFocusForward = onMoveFocusForward
+        textView.onMoveFocusBackward = onMoveFocusBackward
         NVEditorTextView.setDefaultPlainTextAttributes([
             .font: desiredFont,
             .foregroundColor: foregroundColor
@@ -560,6 +586,13 @@ struct AppKitNoteTextView: NSViewRepresentable {
             terms: searchHighlightTerms,
             color: searchHighlightColor
         )
+
+        if context.coordinator.lastHandledFocusRequestID != focusRequestID {
+            context.coordinator.lastHandledFocusRequestID = focusRequestID
+            DispatchQueue.main.async {
+                textView.window?.makeFirstResponder(textView)
+            }
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate, AppKitNoteTextViewFormattingDelegate {
@@ -567,21 +600,26 @@ struct AppKitNoteTextView: NSViewRepresentable {
         private let onBeginEditing: () -> Void
         private let onTextChange: (NSAttributedString, NSRange) -> Void
         private let onSelectionChange: (NSRange) -> Void
+        private let onFocus: () -> Void
         var isPerformingProgrammaticUpdate = false
         var currentNoteID: UUID?
         var lastRefreshGeneration: Int = 0
+        var lastHandledFocusRequestID: Int = 0
 
         init(
             onBeginEditing: @escaping () -> Void,
             onTextChange: @escaping (NSAttributedString, NSRange) -> Void,
-            onSelectionChange: @escaping (NSRange) -> Void
+            onSelectionChange: @escaping (NSRange) -> Void,
+            onFocus: @escaping () -> Void
         ) {
             self.onBeginEditing = onBeginEditing
             self.onTextChange = onTextChange
             self.onSelectionChange = onSelectionChange
+            self.onFocus = onFocus
         }
 
         func textDidBeginEditing(_ notification: Notification) {
+            onFocus()
             onBeginEditing()
         }
 

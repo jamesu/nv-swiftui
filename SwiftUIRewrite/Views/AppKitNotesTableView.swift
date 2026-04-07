@@ -7,11 +7,13 @@ final class NVNotesTableView: NSTableView {
 
     var onMoveForward: (() -> Void)?
     var onMoveBackward: (() -> Void)?
+    var onFocusChange: (() -> Void)?
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted {
             Self.activeTableView = self
+            onFocusChange?()
         }
         return accepted
     }
@@ -22,13 +24,18 @@ final class NVNotesTableView: NSTableView {
     }
 
     override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard let characters = event.charactersIgnoringModifiers else {
             super.keyDown(with: event)
             return
         }
 
         if characters == "\t" {
-            onMoveForward?()
+            if modifiers.contains(.shift) {
+                onMoveBackward?()
+            } else {
+                onMoveForward?()
+            }
             return
         }
         if characters == String(Character(UnicodeScalar(NSBackTabCharacter)!)) {
@@ -65,12 +72,15 @@ struct AppKitNotesTableView: NSViewRepresentable {
     let tablePreviewFontSize: CGFloat
     let tableMetadataFontSize: CGFloat
     let refreshGeneration: Int
+    let focusRequestID: Int
+    let selectFirstRowOnFocusRequest: Bool
     let sortField: NoteSortField
     let sortReversed: Bool
     let onSelectNote: (UUID?) -> Void
     let onSort: (NoteSortField) -> Void
     let onMoveForward: () -> Void
     let onMoveBackward: () -> Void
+    let onFocus: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -79,7 +89,8 @@ struct AppKitNotesTableView: NSViewRepresentable {
             tablePreviewFontSize: tablePreviewFontSize,
             tableMetadataFontSize: tableMetadataFontSize,
             onSelectNote: onSelectNote,
-            onSort: onSort
+            onSort: onSort,
+            onFocus: onFocus
         )
     }
 
@@ -112,6 +123,7 @@ struct AppKitNotesTableView: NSViewRepresentable {
         tableView.action = #selector(Coordinator.didActivateRow(_:))
         tableView.onMoveForward = onMoveForward
         tableView.onMoveBackward = onMoveBackward
+        tableView.onFocusChange = onFocus
 
         let titleColumn = makeColumn(id: .title, title: "Title", minWidth: 220, width: 320)
         let labelsColumn = makeColumn(id: .labels, title: "Labels", minWidth: 90, width: 120)
@@ -126,6 +138,9 @@ struct AppKitNotesTableView: NSViewRepresentable {
         scrollView.documentView = tableView
         context.coordinator.tableView = tableView
         context.coordinator.notes = notes
+        context.coordinator.focusRequestID = focusRequestID
+        context.coordinator.selectFirstRowOnFocusRequest = selectFirstRowOnFocusRequest
+        context.coordinator.lastHandledFocusRequestID = focusRequestID
         return scrollView
     }
 
@@ -136,8 +151,11 @@ struct AppKitNotesTableView: NSViewRepresentable {
         context.coordinator.tableTitleFontSize = tableTitleFontSize
         context.coordinator.tablePreviewFontSize = tablePreviewFontSize
         context.coordinator.tableMetadataFontSize = tableMetadataFontSize
+        context.coordinator.focusRequestID = focusRequestID
+        context.coordinator.selectFirstRowOnFocusRequest = selectFirstRowOnFocusRequest
         tableView.onMoveForward = onMoveForward
         tableView.onMoveBackward = onMoveBackward
+        tableView.onFocusChange = onFocus
         tableView.rowHeight = showsPreviewInTitleColumn ? 30 : 19
         let desiredSort = sortDescriptors(field: sortField, reversed: sortReversed)
         if tableView.sortDescriptors != desiredSort {
@@ -164,6 +182,13 @@ struct AppKitNotesTableView: NSViewRepresentable {
             let allColumns = IndexSet(integersIn: 0..<tableView.numberOfColumns)
             let allRows = IndexSet(integersIn: 0..<tableView.numberOfRows)
             tableView.reloadData(forRowIndexes: allRows, columnIndexes: allColumns)
+        }
+
+        if context.coordinator.lastHandledFocusRequestID != focusRequestID {
+            context.coordinator.lastHandledFocusRequestID = focusRequestID
+            DispatchQueue.main.async {
+                NVNotesTableView.focusActiveTable(selectFirstRowIfNeeded: selectFirstRowOnFocusRequest)
+            }
         }
     }
 
@@ -195,8 +220,12 @@ struct AppKitNotesTableView: NSViewRepresentable {
 
         private let onSelectNote: (UUID?) -> Void
         private let onSort: (NoteSortField) -> Void
+        private let onFocus: () -> Void
         var isApplyingProgrammaticSort = false
         var isApplyingProgrammaticSelection = false
+        var focusRequestID = 0
+        var selectFirstRowOnFocusRequest = true
+        var lastHandledFocusRequestID = 0
         private lazy var dateFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.dateStyle = .short
@@ -210,7 +239,8 @@ struct AppKitNotesTableView: NSViewRepresentable {
             tablePreviewFontSize: CGFloat,
             tableMetadataFontSize: CGFloat,
             onSelectNote: @escaping (UUID?) -> Void,
-            onSort: @escaping (NoteSortField) -> Void
+            onSort: @escaping (NoteSortField) -> Void,
+            onFocus: @escaping () -> Void
         ) {
             self.showsPreviewInTitleColumn = showsPreviewInTitleColumn
             self.tableTitleFontSize = tableTitleFontSize
@@ -218,6 +248,7 @@ struct AppKitNotesTableView: NSViewRepresentable {
             self.tableMetadataFontSize = tableMetadataFontSize
             self.onSelectNote = onSelectNote
             self.onSort = onSort
+            self.onFocus = onFocus
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {

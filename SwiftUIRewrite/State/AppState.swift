@@ -185,6 +185,19 @@ private enum HotKeyRecorder {
 
 @MainActor
 final class AppState: ObservableObject {
+    enum FocusTarget {
+        case search
+        case title
+        case list
+        case editor
+        case tags
+    }
+
+    enum FocusDirection {
+        case forward
+        case backward
+    }
+
     private struct LegacyPassphraseDialogResult {
         var passphraseData: Data
         var rememberInKeychain: Bool
@@ -259,10 +272,17 @@ final class AppState: ObservableObject {
     }
     @Published var editorSelection = EditorSelection(range: NSRange(location: 0, length: 0))
     @Published var tagEditorFocusRequestID = 0
+    @Published var noteListFocusRequestID = 0
+    @Published var editorFocusRequestID = 0
+    @Published var searchFieldFocusRequestID = 0
     @Published private var controlFieldRenameTitle: String?
 
     private var controlFieldRenameOriginalSearch = ""
     private var controlFieldRenameNoteID: UUID?
+    private var searchFieldFocusSelectAll = true
+    private var searchFieldFocusCursorAtEnd = false
+    private var noteListFocusSelectFirstRowIfNeeded = true
+    private(set) var currentFocusTarget: FocusTarget = .search
     @Published var isShowingDeletionConfirmation = false
     @Published var pendingDeletionIDs = Set<UUID>()
     @Published private(set) var editorRefreshGeneration = 0
@@ -278,6 +298,7 @@ final class AppState: ObservableObject {
     private let repository: NoteRepository
     private let directoryMonitor = DirectoryMonitor()
     private let globalHotKeyManager = GlobalHotKeyManager()
+    private var localCtrlTabMonitor: Any?
     private var cachedTypedSearch: String?
     private var pendingDirectoryReloadWorkItem: DispatchWorkItem?
     private var suppressDirectoryRefreshUntil = Date.distantPast
@@ -300,7 +321,14 @@ final class AppState: ObservableObject {
         reloadFromRepository()
         syncDirectoryMonitoring()
         syncGlobalHotKeyRegistration()
+        installCtrlTabMonitor()
         hasLoadedInitialState = true
+    }
+
+    deinit {
+        if let localCtrlTabMonitor {
+            NSEvent.removeMonitor(localCtrlTabMonitor)
+        }
     }
 
     var selectedNote: Note? {
@@ -322,6 +350,18 @@ final class AppState: ObservableObject {
 
     var isEditingTitleInControlField: Bool {
         controlFieldRenameTitle != nil
+    }
+
+    var searchFieldShouldSelectAllOnFocusRequest: Bool {
+        searchFieldFocusSelectAll
+    }
+
+    var searchFieldShouldPlaceCursorAtEndOnFocusRequest: Bool {
+        searchFieldFocusCursorAtEnd
+    }
+
+    var noteListShouldSelectFirstRowOnFocusRequest: Bool {
+        noteListFocusSelectFirstRowIfNeeded
     }
 
     var isFiltering: Bool {
@@ -526,10 +566,7 @@ final class AppState: ObservableObject {
     }
 
     func focusSearchField() {
-        sidebarMode = .notes
-        DispatchQueue.main.async {
-            NVSearchField.focusActiveField()
-        }
+        requestFocus(.search)
     }
 
     func focusNotesList(selectFirstRowIfNeeded: Bool = true) {
@@ -537,7 +574,9 @@ final class AppState: ObservableObject {
         if selectedNoteID == nil, let preferredSelectedNote {
             select(noteID: preferredSelectedNote.id, cacheSearch: false)
         }
-        NVNotesTableView.focusActiveTable(selectFirstRowIfNeeded: selectFirstRowIfNeeded)
+        noteListFocusSelectFirstRowIfNeeded = selectFirstRowIfNeeded
+        noteListFocusRequestID &+= 1
+        currentFocusTarget = .list
     }
 
     func selectNextNote() {
@@ -863,6 +902,7 @@ final class AppState: ObservableObject {
     func focusTagEditor() {
         guard selectedNote != nil else { return }
         tagEditorFocusRequestID &+= 1
+        currentFocusTarget = .tags
     }
 
     func beginRenamingSelectedNoteInControlField() {
@@ -870,10 +910,7 @@ final class AppState: ObservableObject {
         controlFieldRenameNoteID = selectedNote.id
         controlFieldRenameOriginalSearch = searchText
         controlFieldRenameTitle = selectedNote.title
-        sidebarMode = .notes
-        DispatchQueue.main.async {
-            NVSearchField.focusActiveField(selectAll: false, cursorAtEnd: true)
-        }
+        requestFocus(.title)
     }
 
     func commitControlFieldRenameAndFocusEditor() {
@@ -884,58 +921,40 @@ final class AppState: ObservableObject {
         let updatedTitle = controlFieldRenameTitle ?? ""
         renameCurrentNote(updatedTitle, updateSearchField: true)
         endControlFieldRenameKeepingSearch()
-        DispatchQueue.main.async {
-            NVEditorTextView.focusActiveTextView()
+        requestFocus(.editor)
+    }
+
+    func didFocus(_ target: FocusTarget) {
+        currentFocusTarget = target
+    }
+
+    func moveFocus(from source: FocusTarget, direction: FocusDirection) {
+        switch (source, direction) {
+        case (.search, .forward):
+            requestFocus(.list)
+        case (.search, .backward):
+            requestFocus(.tags)
+        case (.title, .forward):
+            finishTitleEditingAndRequestFocus(.list, selectFirstRowIfNeeded: false)
+        case (.title, .backward):
+            finishTitleEditingAndRequestFocus(.tags)
+        case (.list, .forward):
+            requestFocus(.editor)
+        case (.list, .backward):
+            requestFocus(.search)
+        case (.editor, .forward):
+            requestFocus(.tags)
+        case (.editor, .backward):
+            requestFocus(.list)
+        case (.tags, .forward):
+            requestFocus(.search)
+        case (.tags, .backward):
+            requestFocus(.editor)
         }
     }
 
-    func moveForwardFromControlField() {
-        if isEditingTitleInControlField {
-            if let controlFieldRenameNoteID {
-                select(noteID: controlFieldRenameNoteID, cacheSearch: false)
-            }
-            let updatedTitle = controlFieldRenameTitle ?? ""
-            renameCurrentNote(updatedTitle, updateSearchField: true)
-            endControlFieldRenameKeepingSearch()
-            focusNotesList(selectFirstRowIfNeeded: false)
-            return
-        }
-
-        focusNotesList()
-    }
-
-    func moveBackwardFromControlField() {
-        if isEditingTitleInControlField {
-            focusTagEditor()
-            return
-        }
-        if selectedNote != nil {
-            focusTagEditor()
-        }
-    }
-
-    func moveForwardFromNotesList() {
-        DispatchQueue.main.async {
-            NVEditorTextView.focusActiveTextView()
-        }
-    }
-
-    func moveBackwardFromNotesList() {
-        DispatchQueue.main.async {
-            NVSearchField.focusActiveField(selectAll: true)
-        }
-    }
-
-    func moveForwardFromTagEditor() {
-        DispatchQueue.main.async {
-            NVSearchField.focusActiveField(selectAll: true)
-        }
-    }
-
-    func moveBackwardFromTagEditor() {
-        DispatchQueue.main.async {
-            NVEditorTextView.focusActiveTextView()
-        }
+    func moveToEditorFromTitleShortcut() {
+        finishTitleEditingAndRequestFocus(.editor)
     }
 
     func findNextSearchTermOccurrence() {
@@ -2167,11 +2186,68 @@ final class AppState: ObservableObject {
         candidateWindow?.makeKeyAndOrderFront(nil)
 
         DispatchQueue.main.async {
-            NVSearchField.focusActiveField()
+            self.requestFocus(.search)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NVSearchField.focusActiveField()
+            self.requestFocus(.search)
         }
+    }
+
+    private func requestFocus(_ target: FocusTarget, selectFirstRowIfNeeded: Bool = true) {
+        switch target {
+        case .search:
+            sidebarMode = .notes
+            searchFieldFocusSelectAll = true
+            searchFieldFocusCursorAtEnd = false
+            searchFieldFocusRequestID &+= 1
+            currentFocusTarget = .search
+        case .title:
+            sidebarMode = .notes
+            searchFieldFocusSelectAll = false
+            searchFieldFocusCursorAtEnd = true
+            searchFieldFocusRequestID &+= 1
+            currentFocusTarget = .title
+        case .list:
+            focusNotesList(selectFirstRowIfNeeded: selectFirstRowIfNeeded)
+        case .editor:
+            editorFocusRequestID &+= 1
+            currentFocusTarget = .editor
+        case .tags:
+            if selectedNote != nil {
+                focusTagEditor()
+            } else {
+                requestFocus(.search)
+            }
+        }
+    }
+
+    private func installCtrlTabMonitor() {
+        guard localCtrlTabMonitor == nil else { return }
+        localCtrlTabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard event.keyCode == 48, modifiers.contains(.control) else { return event }
+
+            self.moveFocus(
+                from: self.currentFocusTarget,
+                direction: modifiers.contains(.shift) ? .backward : .forward
+            )
+            return nil
+        }
+    }
+
+    private func finishTitleEditingAndRequestFocus(_ target: FocusTarget, selectFirstRowIfNeeded: Bool = true) {
+        guard isEditingTitleInControlField else {
+            requestFocus(target, selectFirstRowIfNeeded: selectFirstRowIfNeeded)
+            return
+        }
+        if let controlFieldRenameNoteID {
+            select(noteID: controlFieldRenameNoteID, cacheSearch: false)
+        }
+        let updatedTitle = controlFieldRenameTitle ?? ""
+        renameCurrentNote(updatedTitle, updateSearchField: true)
+        endControlFieldRenameKeepingSearch()
+        requestFocus(target, selectFirstRowIfNeeded: selectFirstRowIfNeeded)
     }
 
     private func cancelControlFieldRename() {

@@ -61,6 +61,9 @@ private struct SearchCreateBar: View {
                 placeholder: "Search or Create",
                 selectAllOnBeginEditing: appState.shouldSelectAllControlFieldTextOnFocus,
                 isEditingTitle: appState.isEditingTitleInControlField,
+                focusRequestID: appState.searchFieldFocusRequestID,
+                focusSelectAll: appState.searchFieldShouldSelectAllOnFocusRequest,
+                focusCursorAtEnd: appState.searchFieldShouldPlaceCursorAtEndOnFocusRequest,
                 autoComplete: { value in
                     appState.autoCompleteControlField(value)
                 },
@@ -74,13 +77,22 @@ private struct SearchCreateBar: View {
                     appState.cancelControlFieldAction()
                 },
                 onMoveForward: {
-                    appState.moveForwardFromControlField()
+                    appState.moveFocus(
+                        from: appState.isEditingTitleInControlField ? .title : .search,
+                        direction: .forward
+                    )
                 },
                 onMoveBackward: {
-                    appState.moveBackwardFromControlField()
+                    appState.moveFocus(
+                        from: appState.isEditingTitleInControlField ? .title : .search,
+                        direction: .backward
+                    )
                 },
                 onMoveToEditor: {
-                    appState.commitControlFieldRenameAndFocusEditor()
+                    appState.moveToEditorFromTitleShortcut()
+                },
+                onFocus: {
+                    appState.didFocus(appState.isEditingTitleInControlField ? .title : .search)
                 }
             )
             .frame(height: 24)
@@ -234,6 +246,8 @@ private struct NotesListView: View {
             tablePreviewFontSize: appState.preferences.tablePreviewFontSize,
             tableMetadataFontSize: appState.preferences.tableMetadataFontSize,
             refreshGeneration: appState.browserRefreshGeneration,
+            focusRequestID: appState.noteListFocusRequestID,
+            selectFirstRowOnFocusRequest: appState.noteListShouldSelectFirstRowOnFocusRequest,
             sortField: appState.preferences.sortField,
             sortReversed: appState.preferences.sortReversed,
             onSelectNote: { noteID in
@@ -243,10 +257,13 @@ private struct NotesListView: View {
                 appState.setSortField(field)
             },
             onMoveForward: {
-                appState.moveForwardFromNotesList()
+                appState.moveFocus(from: .list, direction: .forward)
             },
             onMoveBackward: {
-                appState.moveBackwardFromNotesList()
+                appState.moveFocus(from: .list, direction: .backward)
+            },
+            onFocus: {
+                appState.didFocus(.list)
             }
         )
         .id(appState.browserRefreshGeneration)
@@ -439,8 +456,11 @@ private struct NoteEditorView: View {
                 fontSize: appState.preferences.noteBodyFontSize,
                 foregroundColor: appState.preferences.foregroundColor.nsColor,
                 backgroundColor: appState.preferences.backgroundColor.nsColor,
+                usesSoftTabs: appState.preferences.softTabs,
+                tabWidth: appState.preferences.tabWidth,
                 isEditable: !appState.isCurrentBackendReadOnly,
                 refreshGeneration: appState.editorRefreshGeneration,
+                focusRequestID: appState.editorFocusRequestID,
                 searchHighlightTerms: appState.activeSearchHighlightTerms,
                 searchHighlightColor: appState.preferences.searchHighlightColor.nsColor,
                 onBeginEditing: {},
@@ -460,7 +480,16 @@ private struct NoteEditorView: View {
                     appState.beginRenamingSelectedNoteInControlField()
                 },
                 onMoveToTagEditing: {
-                    appState.focusTagEditor()
+                    appState.moveFocus(from: .editor, direction: .backward)
+                },
+                onMoveFocusForward: {
+                    appState.moveFocus(from: .editor, direction: .forward)
+                },
+                onMoveFocusBackward: {
+                    appState.moveFocus(from: .editor, direction: .backward)
+                },
+                onFocus: {
+                    appState.didFocus(.editor)
                 }
             )
             .id(note.id)
@@ -484,14 +513,17 @@ private struct NoteEditorView: View {
                         appState.updateLabelsForCurrentNote(labelsText)
                     },
                     onMoveForward: {
-                        appState.moveForwardFromTagEditor()
+                        appState.moveFocus(from: .tags, direction: .forward)
                     },
                     onMoveBackward: {
-                        appState.moveBackwardFromTagEditor()
+                        appState.moveFocus(from: .tags, direction: .backward)
                     },
                     onCancel: {
                         labelsText = note.labelsText
-                        appState.moveBackwardFromTagEditor()
+                        appState.moveFocus(from: .tags, direction: .backward)
+                    },
+                    onFocus: {
+                        appState.didFocus(.tags)
                     }
                 )
                 .frame(maxWidth: .infinity)

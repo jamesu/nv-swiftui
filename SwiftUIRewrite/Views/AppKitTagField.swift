@@ -45,6 +45,7 @@ struct AppKitTagField: NSViewRepresentable {
     let onMoveForward: () -> Void
     let onMoveBackward: () -> Void
     let onCancel: () -> Void
+    let onFocus: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -52,7 +53,8 @@ struct AppKitTagField: NSViewRepresentable {
             onSubmit: onSubmit,
             onMoveForward: onMoveForward,
             onMoveBackward: onMoveBackward,
-            onCancel: onCancel
+            onCancel: onCancel,
+            onFocus: onFocus
         )
     }
 
@@ -92,6 +94,7 @@ struct AppKitTagField: NSViewRepresentable {
         let onMoveForward: () -> Void
         let onMoveBackward: () -> Void
         let onCancel: () -> Void
+        let onFocus: () -> Void
         var isProgrammaticUpdate = false
         var focusRequestID = 0
         var lastHandledFocusRequestID = 0
@@ -101,13 +104,15 @@ struct AppKitTagField: NSViewRepresentable {
             onSubmit: @escaping () -> Void,
             onMoveForward: @escaping () -> Void,
             onMoveBackward: @escaping () -> Void,
-            onCancel: @escaping () -> Void
+            onCancel: @escaping () -> Void,
+            onFocus: @escaping () -> Void
         ) {
             self.onChange = onChange
             self.onSubmit = onSubmit
             self.onMoveForward = onMoveForward
             self.onMoveBackward = onMoveBackward
             self.onCancel = onCancel
+            self.onFocus = onFocus
         }
 
         func controlTextDidChange(_ obj: Notification) {
@@ -115,20 +120,38 @@ struct AppKitTagField: NSViewRepresentable {
             onChange(field.stringValue)
         }
 
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            onFocus()
+        }
+
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                onSubmit()
-                return true
-            }
+            let eventModifiers = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+
             if commandSelector == #selector(NSResponder.insertTab(_:)) ||
                 commandSelector == #selector(NSResponder.insertTabIgnoringFieldEditor(_:)) {
-                onSubmit()
-                onMoveForward()
+                if eventModifiers.contains(.shift) {
+                    onSubmit()
+                    onMoveBackward()
+                } else {
+                    onSubmit()
+                    onMoveForward()
+                }
                 return true
             }
+
             if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                if eventModifiers.contains(.control) {
+                    onSubmit()
+                    onMoveForward()
+                } else {
+                    onSubmit()
+                    onMoveBackward()
+                }
+                return true
+            }
+
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 onSubmit()
-                onMoveBackward()
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
