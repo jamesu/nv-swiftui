@@ -223,11 +223,7 @@ struct AppKitControlField: NSViewRepresentable {
             }
 
             if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
-                if eventModifiers.contains(.control) {
-                    onMoveForward()
-                } else {
-                    onMoveBackward()
-                }
+                onMoveBackward()
                 return true
             }
 

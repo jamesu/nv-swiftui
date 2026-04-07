@@ -140,13 +140,8 @@ struct AppKitTagField: NSViewRepresentable {
             }
 
             if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
-                if eventModifiers.contains(.control) {
-                    onSubmit()
-                    onMoveForward()
-                } else {
-                    onSubmit()
-                    onMoveBackward()
-                }
+                onSubmit()
+                onMoveBackward()
                 return true
             }
 

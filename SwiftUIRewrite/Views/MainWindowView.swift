@@ -463,7 +463,6 @@ private struct NoteEditorView: View {
                 focusRequestID: appState.editorFocusRequestID,
                 searchHighlightTerms: appState.activeSearchHighlightTerms,
                 searchHighlightColor: appState.preferences.searchHighlightColor.nsColor,
-                onBeginEditing: {},
                 onTextChange: { body, range in
                     appState.updateCurrentNoteBody(body, selectedRange: range)
                 },
@@ -480,12 +479,6 @@ private struct NoteEditorView: View {
                     appState.beginRenamingSelectedNoteInControlField()
                 },
                 onMoveToTagEditing: {
-                    appState.moveFocus(from: .editor, direction: .backward)
-                },
-                onMoveFocusForward: {
-                    appState.moveFocus(from: .editor, direction: .forward)
-                },
-                onMoveFocusBackward: {
                     appState.moveFocus(from: .editor, direction: .backward)
                 },
                 onFocus: {
