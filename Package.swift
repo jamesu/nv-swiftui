@@ -25,6 +25,7 @@ let package = Package(
                 "State/AppState.swift",
                 "Views/MainWindowView.swift",
                 "Views/AppKitControlField.swift",
+                "Views/AppKitTagField.swift",
                 "Views/AppKitNotesTableView.swift",
                 "Views/AppKitNoteTextView.swift",
                 "Commands/NVCommands.swift"

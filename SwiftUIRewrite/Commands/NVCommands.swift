@@ -27,6 +27,37 @@ struct NVCommands: Commands {
             .disabled(appState.isCurrentBackendReadOnly)
         }
 
+        CommandMenu("Navigate") {
+            Button("Focus Search") {
+                appState.focusSearchField()
+            }
+            .keyboardShortcut("l", modifiers: [.command])
+
+            Button("Clear Search") {
+                appState.clearSearch()
+            }
+            .keyboardShortcut(.escape, modifiers: [])
+            .disabled(!appState.isFiltering && appState.selectedNoteID == nil)
+
+            Button("Select Previous Note") {
+                appState.selectPreviousNote()
+            }
+            .keyboardShortcut("k", modifiers: [.command])
+            .disabled(appState.filteredNotes.isEmpty)
+
+            Button("Select Next Note") {
+                appState.selectNextNote()
+            }
+            .keyboardShortcut("j", modifiers: [.command])
+            .disabled(appState.filteredNotes.isEmpty)
+
+            Button("Deselect Note") {
+                appState.deselectCurrentNoteAndRestoreSearch()
+            }
+            .keyboardShortcut("d", modifiers: [.command])
+            .disabled(appState.selectedNoteID == nil)
+        }
+
         CommandMenu("Notes") {
             Button("Import Notes...") {
                 appState.importNotesFromFiles()
@@ -52,6 +83,7 @@ struct NVCommands: Commands {
             Button("Export Selected Notes") {
                 appState.exportSelectedNotes()
             }
+            .keyboardShortcut("e", modifiers: [.command])
             .disabled(appState.selectedNoteIDs.isEmpty)
 
             Button("Print Selected Notes") {
@@ -59,6 +91,24 @@ struct NVCommands: Commands {
             }
             .keyboardShortcut("p", modifiers: [.command])
             .disabled(appState.selectedNoteIDs.isEmpty)
+
+            Button("Paste Clipboard as New Note") {
+                appState.pasteClipboardAsNewNote()
+            }
+            .keyboardShortcut("v", modifiers: [.command, .shift])
+            .disabled(appState.isCurrentBackendReadOnly)
+
+            Button("Rename Selected Note") {
+                appState.promptToRenameSelectedNote()
+            }
+            .keyboardShortcut("r", modifiers: [.command])
+            .disabled(!appState.canRenameSelectedNote)
+
+            Button("Edit Tags") {
+                appState.promptToEditTagsForSelectedNote()
+            }
+            .keyboardShortcut("t", modifiers: [.command, .shift])
+            .disabled(!appState.canTagSelectedNote)
 
             Button("Repair Text Encoding...") {
                 appState.promptToRepairSelectedNoteEncoding()
@@ -82,7 +132,7 @@ struct NVCommands: Commands {
             Button("Add Bookmark") {
                 appState.addBookmarkForSelection()
             }
-            .keyboardShortcut("d", modifiers: [.command])
+            .keyboardShortcut("d", modifiers: [.command, .shift])
         }
 
         CommandMenu("View") {
@@ -94,10 +144,17 @@ struct NVCommands: Commands {
         }
 
         CommandMenu("Format") {
+            Button("Make Plain Text") {
+                NVEditorTextView.makePlainTextOnActiveTextView()
+            }
+            .keyboardShortcut("t", modifiers: [.command])
+            .disabled(appState.selectedNoteID == nil || appState.isCurrentBackendReadOnly || !appState.selectedNoteSupportsFormatting)
+
+            Divider()
+
             Button("Show Fonts") {
                 NVEditorTextView.showFontPanelForActiveTextView()
             }
-            .keyboardShortcut("t", modifiers: [.command])
             .disabled(appState.selectedNoteID == nil || appState.isCurrentBackendReadOnly || !appState.selectedNoteSupportsFormatting)
 
             Divider()
@@ -123,7 +180,7 @@ struct NVCommands: Commands {
             Button("Strikethrough") {
                 NVEditorTextView.toggleStrikethroughOnActiveTextView()
             }
-            .keyboardShortcut("k", modifiers: [.command, .shift])
+            .keyboardShortcut("y", modifiers: [.command])
             .disabled(appState.selectedNoteID == nil || appState.isCurrentBackendReadOnly || !appState.selectedNoteSupportsFormatting)
 
             Divider()
@@ -171,6 +228,26 @@ struct NVCommands: Commands {
         }
 
         CommandGroup(after: .help) {
+            Button("Find Next Search Term") {
+                appState.findNextSearchTermOccurrence()
+            }
+            .keyboardShortcut("g", modifiers: [.command])
+            .disabled(!appState.canFindSearchTermInSelectedNote)
+
+            Button("Find Previous Search Term") {
+                appState.findPreviousSearchTermOccurrence()
+            }
+            .keyboardShortcut("G", modifiers: [.command, .shift])
+            .disabled(!appState.canFindSearchTermInSelectedNote)
+
+            Button("Open URL Under Insertion Point") {
+                appState.openURLAtInsertionPoint()
+            }
+            .keyboardShortcut(.return, modifiers: [.command])
+            .disabled(appState.selectedNoteID == nil)
+
+            Divider()
+
             Button("How Does This Thing Work?") {
                 appState.openGettingStartedHelp()
             }

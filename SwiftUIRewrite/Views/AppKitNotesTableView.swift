@@ -1,6 +1,62 @@
 import AppKit
 import SwiftUI
 
+final class NVNotesTableView: NSTableView {
+    private static weak var activeTableView: NVNotesTableView?
+    private static let allTables = NSHashTable<NVNotesTableView>.weakObjects()
+
+    var onMoveForward: (() -> Void)?
+    var onMoveBackward: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            Self.activeTableView = self
+        }
+        return accepted
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        Self.allTables.add(self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard let characters = event.charactersIgnoringModifiers else {
+            super.keyDown(with: event)
+            return
+        }
+
+        if characters == "\t" {
+            onMoveForward?()
+            return
+        }
+        if characters == String(Character(UnicodeScalar(NSBackTabCharacter)!)) {
+            onMoveBackward?()
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    static func focusActiveTable(selectFirstRowIfNeeded: Bool = true) {
+        let candidates = allTables.allObjects
+        let preferredTable =
+            activeTableView ??
+            candidates.first(where: { $0.window?.isKeyWindow == true }) ??
+            candidates.first(where: { $0.window?.isMainWindow == true }) ??
+            candidates.first
+
+        guard let preferredTable else { return }
+        preferredTable.window?.makeFirstResponder(preferredTable)
+        if selectFirstRowIfNeeded, preferredTable.selectedRow == -1, preferredTable.numberOfRows > 0 {
+            preferredTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            preferredTable.scrollRowToVisible(0)
+        }
+        activeTableView = preferredTable
+    }
+}
+
 struct AppKitNotesTableView: NSViewRepresentable {
     let notes: [Note]
     let selectedNoteID: UUID?
@@ -13,6 +69,8 @@ struct AppKitNotesTableView: NSViewRepresentable {
     let sortReversed: Bool
     let onSelectNote: (UUID?) -> Void
     let onSort: (NoteSortField) -> Void
+    let onMoveForward: () -> Void
+    let onMoveBackward: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -34,7 +92,7 @@ struct AppKitNotesTableView: NSViewRepresentable {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .textBackgroundColor
 
-        let tableView = NSTableView()
+        let tableView = NVNotesTableView()
         tableView.headerView = NSTableHeaderView()
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.allowsMultipleSelection = false
@@ -52,6 +110,8 @@ struct AppKitNotesTableView: NSViewRepresentable {
         tableView.dataSource = context.coordinator
         tableView.target = context.coordinator
         tableView.action = #selector(Coordinator.didActivateRow(_:))
+        tableView.onMoveForward = onMoveForward
+        tableView.onMoveBackward = onMoveBackward
 
         let titleColumn = makeColumn(id: .title, title: "Title", minWidth: 220, width: 320)
         let labelsColumn = makeColumn(id: .labels, title: "Labels", minWidth: 90, width: 120)
@@ -70,12 +130,14 @@ struct AppKitNotesTableView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let tableView = context.coordinator.tableView else { return }
+        guard let tableView = context.coordinator.tableView as? NVNotesTableView else { return }
         context.coordinator.notes = notes
         context.coordinator.showsPreviewInTitleColumn = showsPreviewInTitleColumn
         context.coordinator.tableTitleFontSize = tableTitleFontSize
         context.coordinator.tablePreviewFontSize = tablePreviewFontSize
         context.coordinator.tableMetadataFontSize = tableMetadataFontSize
+        tableView.onMoveForward = onMoveForward
+        tableView.onMoveBackward = onMoveBackward
         tableView.rowHeight = showsPreviewInTitleColumn ? 30 : 19
         let desiredSort = sortDescriptors(field: sortField, reversed: sortReversed)
         if tableView.sortDescriptors != desiredSort {

@@ -60,6 +60,7 @@ private struct SearchCreateBar: View {
                 text: appState.controlFieldText,
                 placeholder: "Search or Create",
                 selectAllOnBeginEditing: appState.shouldSelectAllControlFieldTextOnFocus,
+                isEditingTitle: appState.isEditingTitleInControlField,
                 autoComplete: { value in
                     appState.autoCompleteControlField(value)
                 },
@@ -67,10 +68,19 @@ private struct SearchCreateBar: View {
                     appState.updateControlField(value)
                 },
                 onSubmit: {
-                    _ = appState.createNoteIfNecessary()
+                    appState.submitControlField()
                 },
                 onCancel: {
-                    appState.clearSearch()
+                    appState.cancelControlFieldAction()
+                },
+                onMoveForward: {
+                    appState.moveForwardFromControlField()
+                },
+                onMoveBackward: {
+                    appState.moveBackwardFromControlField()
+                },
+                onMoveToEditor: {
+                    appState.commitControlFieldRenameAndFocusEditor()
                 }
             )
             .frame(height: 24)
@@ -231,6 +241,12 @@ private struct NotesListView: View {
             },
             onSort: { field in
                 appState.setSortField(field)
+            },
+            onMoveForward: {
+                appState.moveForwardFromNotesList()
+            },
+            onMoveBackward: {
+                appState.moveBackwardFromNotesList()
             }
         )
         .id(appState.browserRefreshGeneration)
@@ -439,6 +455,12 @@ private struct NoteEditorView: View {
                 },
                 onRedoCommand: {
                     appState.redoCurrentNote()
+                },
+                onMoveToTitleEditing: {
+                    appState.beginRenamingSelectedNoteInControlField()
+                },
+                onMoveToTagEditing: {
+                    appState.focusTagEditor()
                 }
             )
             .id(note.id)
@@ -451,13 +473,28 @@ private struct NoteEditorView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
 
-                TextField("comma-separated labels", text: $labelsText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .disabled(appState.isCurrentBackendReadOnly)
-                    .onSubmit {
+                AppKitTagField(
+                    text: labelsText,
+                    isEditable: !appState.isCurrentBackendReadOnly,
+                    focusRequestID: appState.tagEditorFocusRequestID,
+                    onChange: { value in
+                        labelsText = value
+                    },
+                    onSubmit: {
                         appState.updateLabelsForCurrentNote(labelsText)
+                    },
+                    onMoveForward: {
+                        appState.moveForwardFromTagEditor()
+                    },
+                    onMoveBackward: {
+                        appState.moveBackwardFromTagEditor()
+                    },
+                    onCancel: {
+                        labelsText = note.labelsText
+                        appState.moveBackwardFromTagEditor()
                     }
+                )
+                .frame(maxWidth: .infinity)
 
                 if appState.isCurrentBackendReadOnly {
                     Text("Read only")
@@ -474,6 +511,9 @@ private struct NoteEditorView: View {
         }
         .onChange(of: note.id) { _, _ in
             labelsText = note.labelsText
+        }
+        .onChange(of: note.labelsText) { _, newValue in
+            labelsText = newValue
         }
     }
 }

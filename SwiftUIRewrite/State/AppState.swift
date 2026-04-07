@@ -258,6 +258,11 @@ final class AppState: ObservableObject {
         }
     }
     @Published var editorSelection = EditorSelection(range: NSRange(location: 0, length: 0))
+    @Published var tagEditorFocusRequestID = 0
+    @Published private var controlFieldRenameTitle: String?
+
+    private var controlFieldRenameOriginalSearch = ""
+    private var controlFieldRenameNoteID: UUID?
     @Published var isShowingDeletionConfirmation = false
     @Published var pendingDeletionIDs = Set<UUID>()
     @Published private(set) var editorRefreshGeneration = 0
@@ -308,11 +313,15 @@ final class AppState: ObservableObject {
     }
 
     var controlFieldText: String {
-        return searchText
+        controlFieldRenameTitle ?? searchText
     }
 
     var shouldSelectAllControlFieldTextOnFocus: Bool {
-        searchText.isEmpty && selectedNote != nil
+        !isEditingTitleInControlField && searchText.isEmpty && selectedNote != nil
+    }
+
+    var isEditingTitleInControlField: Bool {
+        controlFieldRenameTitle != nil
     }
 
     var isFiltering: Bool {
@@ -400,6 +409,18 @@ final class AppState: ObservableObject {
         return !appRedoStack.isEmpty
     }
 
+    var canRenameSelectedNote: Bool {
+        selectedNote != nil && !isCurrentBackendReadOnly
+    }
+
+    var canTagSelectedNote: Bool {
+        selectedNote != nil && !isCurrentBackendReadOnly
+    }
+
+    var canFindSearchTermInSelectedNote: Bool {
+        selectedNote != nil && !activeSearchHighlightTerms.isEmpty
+    }
+
     func reloadFromRepository() {
         notes = repository.notes
         bookmarks = repository.bookmarks
@@ -444,10 +465,31 @@ final class AppState: ObservableObject {
     }
 
     func updateControlField(_ value: String) {
+        if isEditingTitleInControlField {
+            controlFieldRenameTitle = value
+            return
+        }
         updateSearch(value)
     }
 
+    func submitControlField() {
+        if isEditingTitleInControlField {
+            commitControlFieldRenameAndFocusEditor()
+            return
+        }
+        _ = createNoteIfNecessary()
+    }
+
+    func cancelControlFieldAction() {
+        if isEditingTitleInControlField {
+            cancelControlFieldRename()
+            return
+        }
+        clearSearch()
+    }
+
     func autoCompleteControlField(_ value: String) -> String? {
+        guard !isEditingTitleInControlField else { return nil }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard preferences.autoCompleteSearches, !normalized.isEmpty else { return nil }
 
@@ -481,6 +523,39 @@ final class AppState: ObservableObject {
 
         selectedNoteID = noteID
         selectedNoteIDs = newSelectionSet
+    }
+
+    func focusSearchField() {
+        sidebarMode = .notes
+        DispatchQueue.main.async {
+            NVSearchField.focusActiveField()
+        }
+    }
+
+    func focusNotesList(selectFirstRowIfNeeded: Bool = true) {
+        sidebarMode = .notes
+        if selectedNoteID == nil, let preferredSelectedNote {
+            select(noteID: preferredSelectedNote.id, cacheSearch: false)
+        }
+        NVNotesTableView.focusActiveTable(selectFirstRowIfNeeded: selectFirstRowIfNeeded)
+    }
+
+    func selectNextNote() {
+        selectAdjacentNote(offset: 1)
+    }
+
+    func selectPreviousNote() {
+        selectAdjacentNote(offset: -1)
+    }
+
+    func deselectCurrentNoteAndRestoreSearch() {
+        guard selectedNoteID != nil else { return }
+        if let cachedTypedSearch {
+            searchText = cachedTypedSearch
+        }
+        selectedNoteID = nil
+        selectedNoteIDs.removeAll()
+        rebuildDerivedCollections()
     }
 
     func select(tag: String?) {
@@ -742,6 +817,141 @@ final class AppState: ObservableObject {
             registerAppUndoOperation(.bookmarkAdded(addedBookmark))
         }
         sidebarMode = .bookmarks
+    }
+
+    func pasteClipboardAsNewNote() {
+        guard !isCurrentBackendReadOnly else { return }
+
+        let pasteboard = NSPasteboard.general
+        let body: NSAttributedString?
+        if let rtfData = pasteboard.data(forType: .rtf),
+           let attributed = try? NSAttributedString(
+                data: rtfData,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+           ) {
+            body = attributed
+        } else if let htmlData = pasteboard.data(forType: .html),
+                  let attributed = try? NSAttributedString(
+                    data: htmlData,
+                    options: [.documentType: NSAttributedString.DocumentType.html],
+                    documentAttributes: nil
+                  ) {
+            body = attributed
+        } else if let string = pasteboard.string(forType: .string), !string.isEmpty {
+            body = NSAttributedString(string: string, attributes: defaultBodyAttributes())
+        } else {
+            body = nil
+        }
+
+        guard let body else { return }
+        let title = body.string
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? "Clipboard Note"
+        createNote(title: title, body: body)
+    }
+
+    func promptToRenameSelectedNote() {
+        beginRenamingSelectedNoteInControlField()
+    }
+
+    func promptToEditTagsForSelectedNote() {
+        focusTagEditor()
+    }
+
+    func focusTagEditor() {
+        guard selectedNote != nil else { return }
+        tagEditorFocusRequestID &+= 1
+    }
+
+    func beginRenamingSelectedNoteInControlField() {
+        guard let selectedNote else { return }
+        controlFieldRenameNoteID = selectedNote.id
+        controlFieldRenameOriginalSearch = searchText
+        controlFieldRenameTitle = selectedNote.title
+        sidebarMode = .notes
+        DispatchQueue.main.async {
+            NVSearchField.focusActiveField(selectAll: false, cursorAtEnd: true)
+        }
+    }
+
+    func commitControlFieldRenameAndFocusEditor() {
+        guard isEditingTitleInControlField else { return }
+        if let controlFieldRenameNoteID {
+            select(noteID: controlFieldRenameNoteID, cacheSearch: false)
+        }
+        let updatedTitle = controlFieldRenameTitle ?? ""
+        renameCurrentNote(updatedTitle, updateSearchField: true)
+        endControlFieldRenameKeepingSearch()
+        DispatchQueue.main.async {
+            NVEditorTextView.focusActiveTextView()
+        }
+    }
+
+    func moveForwardFromControlField() {
+        if isEditingTitleInControlField {
+            if let controlFieldRenameNoteID {
+                select(noteID: controlFieldRenameNoteID, cacheSearch: false)
+            }
+            let updatedTitle = controlFieldRenameTitle ?? ""
+            renameCurrentNote(updatedTitle, updateSearchField: true)
+            endControlFieldRenameKeepingSearch()
+            focusNotesList(selectFirstRowIfNeeded: false)
+            return
+        }
+
+        focusNotesList()
+    }
+
+    func moveBackwardFromControlField() {
+        if isEditingTitleInControlField {
+            focusTagEditor()
+            return
+        }
+        if selectedNote != nil {
+            focusTagEditor()
+        }
+    }
+
+    func moveForwardFromNotesList() {
+        DispatchQueue.main.async {
+            NVEditorTextView.focusActiveTextView()
+        }
+    }
+
+    func moveBackwardFromNotesList() {
+        DispatchQueue.main.async {
+            NVSearchField.focusActiveField(selectAll: true)
+        }
+    }
+
+    func moveForwardFromTagEditor() {
+        DispatchQueue.main.async {
+            NVSearchField.focusActiveField(selectAll: true)
+        }
+    }
+
+    func moveBackwardFromTagEditor() {
+        DispatchQueue.main.async {
+            NVEditorTextView.focusActiveTextView()
+        }
+    }
+
+    func findNextSearchTermOccurrence() {
+        let terms = activeSearchHighlightTerms
+        guard !terms.isEmpty else { return }
+        NVEditorTextView.findNextOccurrenceOnActiveTextView(terms: terms)
+    }
+
+    func findPreviousSearchTermOccurrence() {
+        let terms = activeSearchHighlightTerms
+        guard !terms.isEmpty else { return }
+        NVEditorTextView.findPreviousOccurrenceOnActiveTextView(terms: terms)
+    }
+
+    func openURLAtInsertionPoint() {
+        _ = NVEditorTextView.openLinkAtInsertionPointOnActiveTextView()
     }
 
     func saveCurrentSearch() {
@@ -1964,6 +2174,50 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func cancelControlFieldRename() {
+        guard isEditingTitleInControlField else { return }
+        let originalSearch = controlFieldRenameOriginalSearch
+        endControlFieldRenameKeepingSearch()
+        searchText = originalSearch
+        rebuildDerivedCollections()
+    }
+
+    private func endControlFieldRenameKeepingSearch() {
+        controlFieldRenameTitle = nil
+        controlFieldRenameNoteID = nil
+        controlFieldRenameOriginalSearch = searchText
+    }
+
+    @discardableResult
+    private func createNote(title: String, body: NSAttributedString) -> Note {
+        var note = Note(title: title, body: body)
+        if preferences.legacyStorage.backend == .legacyFileDirectory {
+            note.syncMetadata["storageExtension"] = NewNoteStorageFormat.fileExtension(for: preferences.noteStorageFormat)
+        } else if preferences.legacyStorage.backend == .legacySingleDatabase {
+            note.syncMetadata["storageBackend"] = "legacySingleDatabase"
+        }
+        note.selectedRange = NSRange(location: 0, length: 0)
+        repository.upsert(note)
+        upsertLocal(note)
+        sidebarMode = .notes
+        searchText = title
+        selectedTag = nil
+        rebuildDerivedCollections()
+        select(noteID: note.id, cacheSearch: false)
+        syncAllNotesToActiveStorage()
+        registerAppUndoOperation(.created(note))
+        return note
+    }
+
+    private func defaultBodyAttributes() -> [NSAttributedString.Key: Any] {
+        let font = NSFont(name: preferences.noteBodyFontName, size: preferences.noteBodyFontSize)
+            ?? NSFont.monospacedSystemFont(ofSize: preferences.noteBodyFontSize, weight: .regular)
+        return [
+            .font: font,
+            .foregroundColor: NSColor.textColor
+        ]
+    }
+
     private func materializedURLForExternalAccess(for note: Note) -> URL {
         if let fileURL = note.fileURL {
             return fileURL
@@ -2055,6 +2309,24 @@ final class AppState: ObservableObject {
         ]
 
         return candidateURLs.first(where: { FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    private func selectAdjacentNote(offset: Int) {
+        guard !filteredNotes.isEmpty else { return }
+        sidebarMode = .notes
+
+        let currentIndex = selectedNoteID.flatMap { selectedID in
+            filteredNotes.firstIndex(where: { $0.id == selectedID })
+        }
+
+        let targetIndex: Int
+        if let currentIndex {
+            targetIndex = min(max(currentIndex + offset, 0), filteredNotes.count - 1)
+        } else {
+            targetIndex = offset < 0 ? filteredNotes.count - 1 : 0
+        }
+
+        select(noteID: filteredNotes[targetIndex].id, cacheSearch: false)
     }
 
     private func reconciledDirectoryNotes(_ imported: [Note]) -> [Note] {
@@ -2301,6 +2573,27 @@ final class AppState: ObservableObject {
             return nil
         }
         .filter { !$0.isEmpty }
+    }
+
+    private func promptForSingleLineTextInput(
+        title: String,
+        message: String,
+        initialValue: String,
+        placeholder: String
+    ) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        textField.stringValue = initialValue
+        textField.placeholderString = placeholder
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return textField.stringValue
     }
 
     private func legacySingleDatabaseLoadDetail(source: LegacySingleDatabaseLoadSource, noteCount: Int) -> String {

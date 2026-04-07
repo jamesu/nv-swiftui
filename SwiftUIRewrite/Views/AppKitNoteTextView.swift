@@ -8,9 +8,12 @@ protocol AppKitNoteTextViewFormattingDelegate: AnyObject {
 final class NVEditorTextView: NSTextView {
     private static weak var activeTextView: NVEditorTextView?
     private static var currentSelectedNoteID: UUID?
+    private static var defaultPlainTextAttributes: [NSAttributedString.Key: Any] = [:]
     var noteID: UUID?
     var onUndoCommand: (() -> Void)?
     var onRedoCommand: (() -> Void)?
+    var onMoveToTitleEditing: (() -> Void)?
+    var onMoveToTagEditing: (() -> Void)?
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
@@ -100,6 +103,12 @@ final class NVEditorTextView: NSTextView {
         }
     }
 
+    static func makePlainTextOnActiveTextView() {
+        activeTextView?.applyFormatting { textView in
+            textView.makePlainText()
+        }
+    }
+
     static func showFontPanelForActiveTextView() {
         guard let activeTextView else { return }
         activeTextView.window?.makeFirstResponder(activeTextView)
@@ -108,12 +117,34 @@ final class NVEditorTextView: NSTextView {
         manager.orderFrontFontPanel(nil)
     }
 
+    static func findNextOccurrenceOnActiveTextView(terms: [String]) {
+        activeTextView?.selectOccurrence(of: terms, forward: true)
+    }
+
+    static func findPreviousOccurrenceOnActiveTextView(terms: [String]) {
+        activeTextView?.selectOccurrence(of: terms, forward: false)
+    }
+
+    @discardableResult
+    static func openLinkAtInsertionPointOnActiveTextView() -> Bool {
+        activeTextView?.openLinkAtInsertionPoint() ?? false
+    }
+
+    static func focusActiveTextView() {
+        guard let activeTextView else { return }
+        activeTextView.window?.makeFirstResponder(activeTextView)
+    }
+
     static func setActiveTextView(_ textView: NVEditorTextView?) {
         activeTextView = textView
     }
 
     static func setCurrentSelectedNoteID(_ noteID: UUID?) {
         currentSelectedNoteID = noteID
+    }
+
+    static func setDefaultPlainTextAttributes(_ attributes: [NSAttributedString.Key: Any]) {
+        defaultPlainTextAttributes = attributes
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -137,10 +168,137 @@ final class NVEditorTextView: NSTextView {
         return super.performKeyEquivalent(with: event)
     }
 
+    override func moveToBeginningOfLine(_ sender: Any?) {
+        if jumpToTitleEditingIfNeeded() {
+            return
+        }
+        super.moveToBeginningOfLine(sender)
+    }
+
+    override func moveToLeftEndOfLine(_ sender: Any?) {
+        if jumpToTitleEditingIfNeeded() {
+            return
+        }
+        super.moveToLeftEndOfLine(sender)
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        onMoveToTagEditing?()
+    }
+
     private func applyFormatting(_ operation: (NVEditorTextView) -> Void) {
         guard isEditable else { return }
         operation(self)
         (delegate as? AppKitNoteTextViewFormattingDelegate)?.noteTextViewDidApplyFormatting(self)
+    }
+
+    private func jumpToTitleEditingIfNeeded() -> Bool {
+        guard selectedRange() == NSRange(location: 0, length: 0) else { return false }
+        onMoveToTitleEditing?()
+        return true
+    }
+
+    private func selectOccurrence(of terms: [String], forward: Bool) {
+        let nsString = string as NSString
+        guard nsString.length > 0 else { return }
+
+        let normalizedTerms = terms
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !normalizedTerms.isEmpty else { return }
+
+        let currentSelection = selectedRange()
+        let pivot = forward ? NSMaxRange(currentSelection) : currentSelection.location
+        let options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+
+        var candidate: NSRange?
+
+        if forward {
+            for term in normalizedTerms {
+                let start = min(pivot, nsString.length)
+                let firstPassRange = NSRange(location: start, length: nsString.length - start)
+                let match = nsString.range(of: term, options: options, range: firstPassRange)
+                if match.location != NSNotFound,
+                   candidate.map({ match.location < $0.location }) ?? true {
+                    candidate = match
+                }
+            }
+
+            if candidate == nil, pivot > 0 {
+                for term in normalizedTerms {
+                    let wrappedRange = NSRange(location: 0, length: min(pivot, nsString.length))
+                    let match = nsString.range(of: term, options: options, range: wrappedRange)
+                    if match.location != NSNotFound,
+                       candidate.map({ match.location < $0.location }) ?? true {
+                        candidate = match
+                    }
+                }
+            }
+        } else {
+            for term in normalizedTerms {
+                let firstPassRange = NSRange(location: 0, length: min(pivot, nsString.length))
+                let match = nsString.range(of: term, options: options.union(.backwards), range: firstPassRange)
+                if match.location != NSNotFound,
+                   candidate.map({ match.location > $0.location }) ?? true {
+                    candidate = match
+                }
+            }
+
+            if candidate == nil, pivot < nsString.length {
+                for term in normalizedTerms {
+                    let start = min(pivot, nsString.length)
+                    let wrappedRange = NSRange(location: start, length: nsString.length - start)
+                    let match = nsString.range(of: term, options: options.union(.backwards), range: wrappedRange)
+                    if match.location != NSNotFound,
+                       candidate.map({ match.location > $0.location }) ?? true {
+                        candidate = match
+                    }
+                }
+            }
+        }
+
+        guard let candidate else { return }
+        window?.makeFirstResponder(self)
+        setSelectedRange(candidate)
+        scrollRangeToVisible(candidate)
+    }
+
+    private func openLinkAtInsertionPoint() -> Bool {
+        let selection = selectedRange()
+        let candidateIndexes = [selection.location, max(0, selection.location - 1)]
+        guard let textStorage else { return false }
+
+        for index in candidateIndexes {
+            guard index >= 0, index < textStorage.length else { continue }
+            if let url = textStorage.attribute(.link, at: index, effectiveRange: nil) as? URL {
+                NSWorkspace.shared.open(url)
+                return true
+            }
+            if let urlString = textStorage.attribute(.link, at: index, effectiveRange: nil) as? String,
+               let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func makePlainText() {
+        let plainAttributes = Self.defaultPlainTextAttributes.isEmpty
+            ? [.font: (font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)),
+               .foregroundColor: (textColor ?? NSColor.textColor)]
+            : Self.defaultPlainTextAttributes
+
+        if selectedRange().length == 0 {
+            typingAttributes = plainAttributes
+            return
+        }
+
+        let range = selectedRange()
+        textStorage?.beginEditing()
+        textStorage?.setAttributes(plainAttributes, range: range)
+        textStorage?.endEditing()
     }
 
     private func toggleFontTrait(_ trait: NSFontTraitMask) {
@@ -287,6 +445,8 @@ struct AppKitNoteTextView: NSViewRepresentable {
     let onSelectionChange: (NSRange) -> Void
     let onUndoCommand: () -> Void
     let onRedoCommand: () -> Void
+    let onMoveToTitleEditing: () -> Void
+    let onMoveToTagEditing: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -327,6 +487,12 @@ struct AppKitNoteTextView: NSViewRepresentable {
         textView.noteID = noteID
         textView.onUndoCommand = onUndoCommand
         textView.onRedoCommand = onRedoCommand
+        textView.onMoveToTitleEditing = onMoveToTitleEditing
+        textView.onMoveToTagEditing = onMoveToTagEditing
+        NVEditorTextView.setDefaultPlainTextAttributes([
+            .font: textView.font as Any,
+            .foregroundColor: foregroundColor
+        ])
         textView.textStorage?.setAttributedString(attributedText)
         textView.setSelectedRange(selection)
         scrollView.documentView = textView
@@ -365,6 +531,12 @@ struct AppKitNoteTextView: NSViewRepresentable {
         textView.noteID = noteID
         textView.onUndoCommand = onUndoCommand
         textView.onRedoCommand = onRedoCommand
+        textView.onMoveToTitleEditing = onMoveToTitleEditing
+        textView.onMoveToTagEditing = onMoveToTagEditing
+        NVEditorTextView.setDefaultPlainTextAttributes([
+            .font: desiredFont,
+            .foregroundColor: foregroundColor
+        ])
         let isEditingThisView = textView.window?.firstResponder === textView
         let forcedRefresh = context.coordinator.lastRefreshGeneration != refreshGeneration
         context.coordinator.lastRefreshGeneration = refreshGeneration

@@ -19,7 +19,7 @@ final class NVSearchField: NSSearchField {
         Self.activeField = self
     }
 
-    static func focusActiveField() {
+    static func focusActiveField(selectAll: Bool = true, cursorAtEnd: Bool = false) {
         let candidates = allFields.allObjects
         let preferredField =
             activeField ??
@@ -30,7 +30,13 @@ final class NVSearchField: NSSearchField {
         guard let preferredField else { return }
         preferredField.window?.makeKeyAndOrderFront(nil)
         preferredField.window?.makeFirstResponder(preferredField)
-        preferredField.selectText(nil)
+        if cursorAtEnd,
+           let editor = preferredField.window?.fieldEditor(true, for: preferredField) as? NSTextView {
+            let length = editor.string.count
+            editor.setSelectedRange(NSRange(location: length, length: 0))
+        } else if selectAll {
+            preferredField.selectText(nil)
+        }
         Self.activeField = preferredField
     }
 }
@@ -39,18 +45,26 @@ struct AppKitControlField: NSViewRepresentable {
     let text: String
     let placeholder: String
     let selectAllOnBeginEditing: Bool
+    let isEditingTitle: Bool
     let autoComplete: (String) -> String?
     let onChange: (String) -> Void
     let onSubmit: () -> Void
     let onCancel: () -> Void
+    let onMoveForward: () -> Void
+    let onMoveBackward: () -> Void
+    let onMoveToEditor: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             selectAllOnBeginEditing: selectAllOnBeginEditing,
+            isEditingTitle: isEditingTitle,
             autoComplete: autoComplete,
             onChange: onChange,
             onSubmit: onSubmit,
-            onCancel: onCancel
+            onCancel: onCancel,
+            onMoveForward: onMoveForward,
+            onMoveBackward: onMoveBackward,
+            onMoveToEditor: onMoveToEditor
         )
     }
 
@@ -61,8 +75,6 @@ struct AppKitControlField: NSViewRepresentable {
         field.sendsWholeSearchString = true
         field.focusRingType = .default
         field.font = NSFont.systemFont(ofSize: 13)
-        field.target = context.coordinator
-        field.action = #selector(Coordinator.didSubmit(_:))
         field.delegate = context.coordinator
         context.coordinator.field = field
         return field
@@ -70,6 +82,7 @@ struct AppKitControlField: NSViewRepresentable {
 
     func updateNSView(_ field: NSSearchField, context: Context) {
         context.coordinator.selectAllOnBeginEditing = selectAllOnBeginEditing
+        context.coordinator.isEditingTitle = isEditingTitle
         let isEditing = field.window?.firstResponder is NSTextView
         if isEditing,
            let prefix = context.coordinator.autocompletedPrefix,
@@ -88,26 +101,38 @@ struct AppKitControlField: NSViewRepresentable {
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         weak var field: NSSearchField?
         var selectAllOnBeginEditing: Bool
+        var isEditingTitle: Bool
         let autoComplete: (String) -> String?
         let onChange: (String) -> Void
         let onSubmit: () -> Void
         let onCancel: () -> Void
+        let onMoveForward: () -> Void
+        let onMoveBackward: () -> Void
+        let onMoveToEditor: () -> Void
         var isProgrammaticUpdate = false
         var autocompletedPrefix: String?
         private var lastUserTypedValue = ""
 
         init(
             selectAllOnBeginEditing: Bool,
+            isEditingTitle: Bool,
             autoComplete: @escaping (String) -> String?,
             onChange: @escaping (String) -> Void,
             onSubmit: @escaping () -> Void,
-            onCancel: @escaping () -> Void
+            onCancel: @escaping () -> Void,
+            onMoveForward: @escaping () -> Void,
+            onMoveBackward: @escaping () -> Void,
+            onMoveToEditor: @escaping () -> Void
         ) {
             self.selectAllOnBeginEditing = selectAllOnBeginEditing
+            self.isEditingTitle = isEditingTitle
             self.autoComplete = autoComplete
             self.onChange = onChange
             self.onSubmit = onSubmit
             self.onCancel = onCancel
+            self.onMoveForward = onMoveForward
+            self.onMoveBackward = onMoveBackward
+            self.onMoveToEditor = onMoveToEditor
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
@@ -126,6 +151,13 @@ struct AppKitControlField: NSViewRepresentable {
             let typedValue = field.stringValue
             let previousAutocompletedPrefix = autocompletedPrefix
             autocompletedPrefix = nil
+
+            if typedValue.isEmpty && !lastUserTypedValue.isEmpty {
+                lastUserTypedValue = ""
+                onCancel()
+                return
+            }
+
             onChange(typedValue)
 
             guard let editor = obj.userInfo?["NSFieldEditor"] as? NSTextView else { return }
@@ -154,21 +186,39 @@ struct AppKitControlField: NSViewRepresentable {
             isProgrammaticUpdate = false
         }
 
-        @objc
-        func didSubmit(_ sender: Any?) {
-            autocompletedPrefix = nil
-            if let field {
-                lastUserTypedValue = field.stringValue
-            }
-            onSubmit()
-        }
-
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
                 autocompletedPrefix = nil
                 lastUserTypedValue = ""
                 onCancel()
                 return true
+            }
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) ||
+                commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+                autocompletedPrefix = nil
+                if let field {
+                    lastUserTypedValue = field.stringValue
+                }
+                onSubmit()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertTab(_:)) ||
+                commandSelector == #selector(NSResponder.insertTabIgnoringFieldEditor(_:)) {
+                onMoveForward()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                onMoveBackward()
+                return true
+            }
+            if isEditingTitle &&
+                (commandSelector == #selector(NSResponder.moveToEndOfLine(_:)) ||
+                 commandSelector == #selector(NSResponder.moveToRightEndOfLine(_:))) {
+                let currentSelection = textView.selectedRange()
+                if currentSelection.length == 0 && currentSelection.location == textView.string.count {
+                    onMoveToEditor()
+                    return true
+                }
             }
             return false
         }
